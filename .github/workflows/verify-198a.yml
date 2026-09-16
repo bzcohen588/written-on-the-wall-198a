@@ -1,0 +1,103 @@
+name: Verify Conjecture 198a
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      LEAN_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and extract the original archive
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import hashlib
+          import tarfile
+
+          archive = Path("08ea85d2-69e4-4e93-80ae-f5a32bbabdcb-aristotle.tar.gz")
+          expected = "d13734762b28097f79ead8c8f3845e881311bbb9ab27fccfd705fd6ea8d6a931"
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if actual != expected:
+              raise SystemExit("Archive differs from the inspected copy: " + actual)
+          with tarfile.open(archive) as bundle:
+              bundle.extractall(".", filter="data")
+          print("Original archive confirmed:", actual)
+          PYTHON
+
+      - name: Rebuild and recheck the proofs
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: output-final_aristotle
+          auto-config: "false"
+          build: "true"
+          build-args: "--wfail"
+          test: "false"
+          lint: "false"
+          use-github-cache: "false"
+          use-mathlib-cache: "true"
+          leanchecker: "true"
+          leanchecker-args: "RequestProject"
+
+      - name: Check the theorem's axiom dependencies
+        working-directory: output-final_aristotle
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          theorems = [
+              "WrittenOnTheWallII.GraphConjecture198a.conjecture198a",
+              "SimpleGraph.geodesic_lemma",
+              "SimpleGraph.selfCentered_bipartite_ge",
+              "SimpleGraph.exists_hamiltonian_of_diam_two",
+              "SimpleGraph.exists_hamiltonian_of_split",
+              "SimpleGraph.exists_hamiltonian_of_indep_le_two",
+          ]
+          code = "import RequestProject.Conjecture198a\n"
+          code += "#check @WrittenOnTheWallII.GraphConjecture198a.conjecture198a\n"
+          code += "\n".join("#print axioms " + name for name in theorems) + "\n"
+          Path("Audit198a.lean").write_text(code)
+          result = subprocess.run(
+              ["lake", "env", "lean", "Audit198a.lean"],
+              text=True,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+          )
+          Path("axiom-audit.log").write_text(result.stdout)
+          print(result.stdout)
+          if result.returncode:
+              raise SystemExit(result.returncode)
+          allowed = {"propext", "Classical.choice", "Quot.sound"}
+          for name in theorems:
+              pattern = re.escape("'" + name + "'") + r"\s+depends on axioms:\s*\[([^\]]*)\]"
+              match = re.search(pattern, result.stdout)
+              if not match:
+                  raise SystemExit("FAIL: missing axiom output for " + name)
+              actual = {x.strip() for x in match.group(1).split(",") if x.strip()}
+              unexpected = actual - allowed
+              if unexpected:
+                  raise SystemExit("FAIL: unexpected axioms: " + str(unexpected))
+              print("PASS:", name)
+          PYTHON
+
+      - name: Save the audit output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conjecture-198a-audit
+          path: |
+            output-final_aristotle/axiom-audit.log
+            output-final_aristotle/Audit198a.lean
+          if-no-files-found: ignore
