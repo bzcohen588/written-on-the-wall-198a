@@ -34,6 +34,12 @@ jobs:
           print("Original archive confirmed:", actual)
           PYTHON
 
+      - name: Confirm displayed proof matches verified proof
+        shell: bash
+        run: |
+          cmp Conjecture198a.lean output-final_aristotle/RequestProject/Conjecture198a.lean
+          echo "PASS: displayed Conjecture198a.lean matches the verified Aristotle proof"
+      
       - name: Rebuild and recheck the proofs
         uses: leanprover/lean-action@v1
         with:
